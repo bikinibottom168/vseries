@@ -1,0 +1,14 @@
+[Unit]
+Description=vseries → central API sync (one-shot)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=/opt/vseries-sync/config.env
+ExecStart=/opt/vseries-sync/venv/bin/python /opt/vseries-sync/sync.py
+WorkingDirectory=/opt/vseries-sync
+User=root
+StandardOutput=journal
+StandardError=journal
+TimeoutStartSec=30min

@@ -1,0 +1,11 @@
+[Unit]
+Description=Run vseries-sync hourly (and 2min after boot)
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=1h
+Persistent=true
+Unit=vseries-sync.service
+
+[Install]
+WantedBy=timers.target

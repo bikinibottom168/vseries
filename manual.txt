@@ -1,0 +1,216 @@
+============================================================
+vseries-sync — คู่มือใช้งาน
+============================================================
+
+โปรแกรมนี้คอยสแกนโฟลเดอร์หนังใน /storage/vseries/ แล้วซิงค์ข้อมูล
+ขึ้นเว็บส่วนกลาง (vseries.api-movie.com) อัตโนมัติทุก 1 ชั่วโมง
+- รูปปก (*_cover.*) → อัพขึ้น up2.in.th แล้วเอา URL ไปใส่ image
+- เรื่องย่อจาก *summary.txt → ใส่ใน description
+- ไฟล์ตอน *_EP<num>.mp4 → สร้าง episodes พร้อมเรียงเลข
+- มีอะไรเพิ่ม/อัพเดท → แจ้ง Telegram
+- ถ้าหาไฟล์ปกหรือ summary ไม่เจอ → ยังอัพ แต่แจ้ง Telegram
+
+============================================================
+1. ไฟล์ในชุดนี้
+============================================================
+sync.py               ตัวหลัก (Python)
+config.env            ค่า config + API keys (ห้ามแก้สิทธิ์น้อยกว่า 600)
+vseries-sync.service  systemd unit (รันครั้งเดียวจบ)
+vseries-sync.timer    systemd timer (ทุก 1 ชม. + 2 นาทีหลัง boot)
+install.sh            ตัวติดตั้ง
+manual.txt            คู่มือนี้
+
+============================================================
+2. ติดตั้งบน Ubuntu (ครั้งแรก)
+============================================================
+
+ก๊อปทั้งโฟลเดอร์ไปบนเซิร์ฟเวอร์ Ubuntu ก่อน เช่น
+
+    scp -r check-movie-short-linux/ user@ubuntu-host:~/
+
+แล้ว SSH เข้าไปรัน
+
+    ssh user@ubuntu-host
+    cd ~/check-movie-short-linux
+    sudo bash install.sh
+
+install.sh จะทำสิ่งต่อไปนี้
+1) apt update + ติดตั้ง python3, python3-venv, ca-certificates, curl
+2) สร้าง /opt/vseries-sync/  และ /var/lib/vseries-sync/
+3) สร้าง Python venv ที่ /opt/vseries-sync/venv และติดตั้ง requests
+4) ก๊อป sync.py ไป /opt/vseries-sync/sync.py
+5) ก๊อป config.env ไป /opt/vseries-sync/config.env (chmod 600)
+   - ถ้ามีไฟล์เดิมอยู่แล้ว จะไม่เขียนทับ
+6) ติดตั้ง systemd service + timer แล้ว enable timer
+
+จบขั้นตอนนี้ timer จะเริ่มทำงานเองภายใน 2 นาที
+และเมื่อเครื่อง reboot จะทำงานต่อทันที (ไม่ต้องตั้งใหม่)
+
+============================================================
+3. คำสั่งที่ใช้บ่อย
+============================================================
+
+เช็คสถานะ timer
+    sudo systemctl status vseries-sync.timer --no-pager
+
+เช็คตารางรันถัดไป
+    sudo systemctl list-timers vseries-sync.timer
+
+รันทันที (ไม่ต้องรอ timer)
+    sudo systemctl start vseries-sync.service
+
+ดู log รอบล่าสุด
+    sudo journalctl -u vseries-sync.service -n 200 --no-pager
+
+ดู log สด (เปิดทิ้งไว้ดูได้)
+    sudo journalctl -u vseries-sync.service -f
+
+แก้ config (API keys / path)
+    sudo nano /opt/vseries-sync/config.env
+    sudo systemctl restart vseries-sync.timer
+
+ดู state ปัจจุบัน
+    cat /var/lib/vseries-sync/state.json | jq .
+
+หยุดชั่วคราว
+    sudo systemctl stop vseries-sync.timer
+    sudo systemctl disable vseries-sync.timer
+
+เปิดใหม่
+    sudo systemctl enable --now vseries-sync.timer
+
+============================================================
+4. โหมดทดสอบ --test
+============================================================
+
+ใช้เวลาอยากเทสว่าตั้งค่าเรียบร้อยไหม โดยไม่บันทึก state
+- ประมวลผลแค่ 3 โฟลเดอร์แรก (เรียงตามชื่อ)
+- อัพรูปขึ้น up2.in.th จริง
+- ยิงข้อมูลเข้า vseries.api-movie.com จริง
+- แต่ไม่เขียน state.json — รันซ้ำกี่ครั้งก็ได้
+- ข้อความ Telegram จะมี prefix [TEST]
+
+วิธีรันด้วยมือ (ใช้ venv ที่ติดตั้งไว้แล้ว)
+
+    sudo bash -c 'set -a; source /opt/vseries-sync/config.env; set +a; \
+        /opt/vseries-sync/venv/bin/python /opt/vseries-sync/sync.py --test'
+
+หรือถ้าอยากเทสในจำนวนอื่น (เช่น 5 เรื่อง)
+
+    sudo bash -c 'set -a; source /opt/vseries-sync/config.env; set +a; \
+        /opt/vseries-sync/venv/bin/python /opt/vseries-sync/sync.py --test --limit 5'
+
+หมายเหตุ
+- --test ส่งข้อมูลเข้าระบบจริง ถ้าเรื่องนั้นยังไม่เคยอัพ จะถูกเพิ่มเข้า DB
+- ถ้าเรื่องมีอยู่แล้ว (เคยอัพ) จะถูกอัพเดททับ episodes ใหม่ทั้งก้อน
+
+============================================================
+5. โครงสร้างโฟลเดอร์หนังที่โปรแกรมรองรับ
+============================================================
+
+/storage/vseries/
+├── ความรักที่ลุกโชน/
+│   ├── ความรักที่ลุกโชน_cover.jpg     (ปก — ต้องลงท้ายด้วย _cover.* เช่น .jpg/.png/.webp)
+│   ├── ความรักที่ลุกโชน_summary.txt   (เรื่องย่อ — ลงท้ายด้วย summary.txt)
+│   ├── ความรักที่ลุกโชน_EP1.mp4
+│   ├── ความรักที่ลุกโชน_EP2.mp4
+│   └── ความรักที่ลุกโชน_EP10.mp4
+└── เรื่องถัดไป/
+    └── ...
+
+กฎ
+- ชื่อตอนต้องลงท้ายด้วย _EP<เลข>.mp4 (เช่น _EP1.mp4, _EP17.mp4, _EP100.mp4)
+- ตัวเลขจะถูกใช้ทั้งเป็น name (EP17) และใช้ sort (numeric)
+- ปก: หาไฟล์ที่มีคำว่า "cover" และนามสกุล .jpg .jpeg .png .webp
+  - ถ้าเจอหลายไฟล์จะเลือกตัวที่ลงท้าย _cover.jpg ก่อน
+- summary: หาไฟล์ที่ลงท้ายด้วย summary.txt (ไม่สนเล็กใหญ่)
+- ถ้าไม่มี cover หรือ summary → ยังอัพได้ แต่ field จะเป็น "" และ Telegram จะแจ้งเตือน
+
+URL ของ episode จะเป็น (URL_PREFIX กำหนดใน config.env ดีฟอลต์ /vseries)
+    /vseries/<ชื่อโฟลเดอร์>/<ชื่อไฟล์>.mp4
+
+============================================================
+6. กลไกตรวจจับการเปลี่ยนแปลง
+============================================================
+
+โปรแกรมเก็บ "signature" ของแต่ละโฟลเดอร์เป็น hash SHA-256 ของ
+รายชื่อไฟล์ทั้งหมด + ขนาดไฟล์ → เก็บใน state.json
+
+รอบถัดไป
+- ถ้า signature เหมือนเดิม → ข้าม (ไม่ทำอะไร)
+- ถ้าต่าง (เช่น มี EP เพิ่ม, เปลี่ยน cover, ขนาดไฟล์เปลี่ยน) → ยิง PUT
+  อัพเดท episodes ทั้งก้อน + รีอัพปกใหม่ + ส่ง Telegram
+
+ถ้า state.json หายไป โปรแกรมจะค้นเรื่องในระบบกลางก่อนสร้างใหม่
+(GET /movies?search=<title>&type=series) ถ้าเจอชื่อตรงเป๊ะจะ PUT แทน POST
+→ ไม่สร้างเรื่องซ้ำในระบบ
+
+============================================================
+7. ค่า config (config.env)
+============================================================
+
+VSERIES_ROOT       ที่อยู่โฟลเดอร์หนัง (ดีฟอลต์ /storage/vseries)
+STATE_FILE         ที่เก็บ state.json
+URL_PREFIX         prefix ของ url ตอน (ดีฟอลต์ /vseries)
+UP2_API_KEY        api key ของ up2.in.th
+CENTRAL_API_BASE   url ส่วนกลาง (ดีฟอลต์ https://vseries.api-movie.com/api/v1)
+CENTRAL_API_KEY    api key ของส่วนกลาง
+TG_BOT_TOKEN       Telegram bot token
+TG_CHAT_ID         Telegram chat id
+
+แก้แล้วต้อง restart timer
+    sudo systemctl restart vseries-sync.timer
+
+============================================================
+8. แก้ปัญหาเบื้องต้น
+============================================================
+
+[ปัญหา] รัน install.sh แล้วบอก "ต้องรันด้วย sudo"
+→ รันด้วย sudo bash install.sh
+
+[ปัญหา] timer enable แต่ไม่มี log
+→ ดูตารางรันถัดไป: sudo systemctl list-timers vseries-sync.timer
+   ถ้ายังไม่ครบ 2 นาทีหลัง boot จะยังไม่รัน — สั่งรันทันทีด้วย
+   sudo systemctl start vseries-sync.service
+
+[ปัญหา] Python ฟ้อง ModuleNotFoundError: requests
+→ venv ผิดพลาด สร้างใหม่:
+   sudo rm -rf /opt/vseries-sync/venv
+   sudo python3 -m venv /opt/vseries-sync/venv
+   sudo /opt/vseries-sync/venv/bin/pip install requests
+
+[ปัญหา] central API ตอบ 401
+→ CENTRAL_API_KEY ใน config.env ผิด หรือไม่ได้ restart timer หลังแก้
+
+[ปัญหา] up2 ตอบ 401/403
+→ UP2_API_KEY หมดอายุ/ถูกลบ ไปสร้างใหม่ที่ https://up2.in.th/account/api
+
+[ปัญหา] Telegram ไม่มีข้อความเข้า
+→ ทดสอบ token ด้วย:
+   curl "https://api.telegram.org/bot<TOKEN>/sendMessage" \
+        -d chat_id=<CHATID> -d text=test
+   ถ้าได้ "ok":true แต่ไม่มีข้อความ — chat_id ผิด (เช็คใหม่กับ @userinfobot)
+
+[ปัญหา] ชื่อไฟล์ภาษาไทยขึ้น log เป็น \xXX\xXX
+→ ปกติเพราะ journal ไม่ render UTF-8 แต่ระบบยังทำงานถูก
+   ถ้าจะให้สวย ใช้ journalctl --output=cat แทน
+
+[ปัญหา] หนังเรื่องเดิมโดนสร้างซ้ำในส่วนกลาง
+→ state.json หาย + ชื่อในระบบกลางไม่ตรงเป๊ะกับชื่อโฟลเดอร์
+   วิธีแก้: PUT/DELETE เรื่องซ้ำผ่าน API หรือแก้ชื่อในส่วนกลางให้ตรง
+   แล้วลบรายการใน state.json รอรอบถัดไปจะเชื่อมเองด้วย search
+
+============================================================
+9. การถอนติดตั้ง
+============================================================
+
+sudo systemctl disable --now vseries-sync.timer
+sudo systemctl stop vseries-sync.service
+sudo rm /etc/systemd/system/vseries-sync.service
+sudo rm /etc/systemd/system/vseries-sync.timer
+sudo systemctl daemon-reload
+sudo rm -rf /opt/vseries-sync
+# state.json จะอยู่ที่ /var/lib/vseries-sync/ — ลบเองถ้าต้องการ
+sudo rm -rf /var/lib/vseries-sync
+
+============================================================
