@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import html
 import json
 import os
 import re
@@ -93,16 +94,20 @@ def folder_signature(folder: Path) -> str:
 
 
 def find_cover(folder: Path) -> Optional[Path]:
+    """Find cover image. Strict match: `_cover.<ext>` suffix or exact `cover.<ext>` filename."""
     candidates = []
     for f in folder.iterdir():
         if not f.is_file():
             continue
         low = f.name.lower()
-        if "cover" in low and low.endswith(COVER_EXTS):
+        if not low.endswith(COVER_EXTS):
+            continue
+        stem = os.path.splitext(low)[0]
+        if stem == "cover" or stem.endswith("_cover"):
             candidates.append(f)
     if not candidates:
         return None
-    # prefer "_cover.jpg" exact suffix
+    # prefer "_cover.jpg" suffix
     for c in candidates:
         if c.name.lower().endswith("_cover.jpg"):
             return c
@@ -110,10 +115,13 @@ def find_cover(folder: Path) -> Optional[Path]:
 
 
 def find_summary(folder: Path) -> Optional[Path]:
-    for f in folder.iterdir():
-        if f.is_file() and f.name.lower().endswith(SUMMARY_SUFFIX):
-            return f
-    return None
+    matches = [
+        f for f in folder.iterdir()
+        if f.is_file() and f.name.lower().endswith(SUMMARY_SUFFIX)
+    ]
+    if not matches:
+        return None
+    return sorted(matches, key=lambda p: p.name)[0]
 
 
 def find_episodes(folder: Path) -> list[tuple[int, str, str]]:
@@ -147,8 +155,13 @@ def upload_cover(cover_path: Path) -> str:
         )
     if not r.ok:
         raise RuntimeError(f"up2 upload {r.status_code}: {r.text[:300]}")
-    body = r.json()
-    direct = body.get("data", {}).get("urls", {}).get("direct")
+    try:
+        body = r.json()
+    except ValueError:
+        raise RuntimeError(f"up2 returned non-JSON: {r.text[:300]}")
+    data = body.get("data") or {}
+    urls = data.get("urls") or {}
+    direct = urls.get("direct")
     if not direct:
         raise RuntimeError(f"up2 response missing data.urls.direct: {body}")
     return direct
@@ -169,16 +182,22 @@ def central_request(method: str, path: str, json_body: Optional[dict] = None) ->
     )
     if not r.ok:
         raise RuntimeError(f"central {method} {path} -> {r.status_code}: {r.text[:500]}")
-    return r.json()
+    try:
+        return r.json()
+    except ValueError:
+        raise RuntimeError(f"central returned non-JSON: {r.text[:300]}")
 
 
 def search_existing(title: str) -> Optional[int]:
     """Look up a series by exact title match. Returns id or None."""
     q = quote(title, safe="")
     body = central_request("GET", f"/movies?search={q}&type=series&per_page=200")
-    for item in body.get("data", []):
-        if item.get("title") == title:
-            return int(item["id"])
+    for item in (body.get("data") or []):
+        if item.get("title") == title and item.get("id") is not None:
+            try:
+                return int(item["id"])
+            except (TypeError, ValueError):
+                continue
     return None
 
 
@@ -265,7 +284,10 @@ def process_folder(folder: Path, state: dict, *, test_mode: bool = False) -> Non
         action = "อัพเดท"
     else:
         resp = central_request("POST", "/movies", payload)
-        movie_id = int(resp.get("data", {}).get("id"))
+        new_id = (resp.get("data") or {}).get("id")
+        if new_id is None:
+            raise RuntimeError(f"central POST returned no data.id: {resp}")
+        movie_id = int(new_id)
         action = "เพิ่มใหม่"
 
     if not test_mode:
@@ -280,19 +302,77 @@ def process_folder(folder: Path, state: dict, *, test_mode: bool = False) -> Non
     tag = "[TEST] " if test_mode else ""
     log(f"{tag}{action}: {title} (id={movie_id}, ep={len(eps_tuples)}, issues={len(issues)})")
 
-    # Notify
+    # Notify (escape user-controlled strings for HTML)
+    safe_title = html.escape(title)
     lines = [
-        f"{('🧪 [TEST] ' if test_mode else '🎬 ')}<b>{action}</b>: {title}",
+        f"{('🧪 [TEST] ' if test_mode else '🎬 ')}<b>{html.escape(action)}</b>: {safe_title}",
         f"ID: <code>{movie_id}</code>",
         f"จำนวน EP: {len(eps_tuples)}",
     ]
     if cover_url:
-        lines.append(f"ปก: {cover_url}")
+        lines.append(f"ปก: {html.escape(cover_url)}")
     if issues:
         lines.append("⚠️ <b>ปัญหา:</b>")
         for i in issues:
-            lines.append(f"• {i}")
+            lines.append(f"• {html.escape(i)}")
     telegram_notify("\n".join(lines))
+
+
+# -------- Connectivity check --------
+def run_check() -> int:
+    """Ping up2 (account check), central (list movies), telegram (getMe). No writes."""
+    ok = True
+
+    # up2.in.th — there isn't a dedicated ping endpoint; use upload endpoint with
+    # an obviously-invalid request that authenticates but fails validation.
+    try:
+        r = requests.get(
+            "https://up2.in.th/api/v1/upload",
+            headers={"Authorization": f"Bearer {UP2_API_KEY}"},
+            timeout=15,
+        )
+        # any 2xx/4xx (other than 401) means our token reached the server.
+        if r.status_code == 401:
+            log(f"❌ up2: 401 Unauthorized — UP2_API_KEY ผิด")
+            ok = False
+        else:
+            log(f"✓ up2: HTTP {r.status_code} (token accepted at network level)")
+    except Exception as e:
+        log(f"❌ up2: ติดต่อไม่ได้ — {e}")
+        ok = False
+
+    # central — list one movie
+    try:
+        body = central_request("GET", "/movies?per_page=1")
+        total = (body.get("meta") or {}).get("total", "?")
+        log(f"✓ central: OK, total movies = {total}")
+    except Exception as e:
+        log(f"❌ central: {e}")
+        ok = False
+
+    # telegram getMe
+    try:
+        r = requests.get(
+            f"https://api.telegram.org/bot{TG_BOT_TOKEN}/getMe",
+            timeout=15,
+        )
+        body = r.json()
+        if r.ok and body.get("ok"):
+            uname = body.get("result", {}).get("username")
+            log(f"✓ telegram: bot @{uname} ตอบกลับ ok")
+        else:
+            log(f"❌ telegram getMe: HTTP {r.status_code} body={body}")
+            ok = False
+    except Exception as e:
+        log(f"❌ telegram: {e}")
+        ok = False
+
+    # Send a test message
+    if ok:
+        telegram_notify("✅ <b>--check</b> ผ่าน: เชื่อมต่อ up2 / central / telegram ได้ครบ")
+        log("ส่งข้อความ test เข้า Telegram แล้ว ถ้าเห็นข้อความใน chat แปลว่า TG_CHAT_ID ถูก")
+
+    return 0 if ok else 2
 
 
 # -------- Main --------
@@ -309,9 +389,17 @@ def main() -> int:
         default=None,
         help="จำกัดจำนวนโฟลเดอร์ที่ประมวลผล (override --test default ของ 3)",
     )
+    parser.add_argument(
+        "--check",
+        action="store_true",
+        help="ตรวจการเชื่อมต่อ up2, central, telegram โดยไม่ทำงานจริง",
+    )
     args = parser.parse_args()
 
     load_config()
+
+    if args.check:
+        return run_check()
 
     if not VSERIES_ROOT.exists():
         log(f"VSERIES_ROOT ไม่พบ: {VSERIES_ROOT}")
@@ -344,8 +432,8 @@ def main() -> int:
             log(f"ERROR {folder.name}: {e}")
             traceback.print_exc()
             telegram_notify(
-                f"❌ <b>ERROR</b> ขณะประมวลผล <code>{folder.name}</code>\n"
-                f"<code>{str(e)[:500]}</code>"
+                f"❌ <b>ERROR</b> ขณะประมวลผล <code>{html.escape(folder.name)}</code>\n"
+                f"<code>{html.escape(str(e)[:500])}</code>"
             )
 
     if not test_mode:

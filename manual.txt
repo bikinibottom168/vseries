@@ -80,22 +80,32 @@ install.sh จะทำสิ่งต่อไปนี้
     sudo systemctl enable --now vseries-sync.timer
 
 ============================================================
-4. โหมดทดสอบ --test
+4. โหมดต่างๆ
 ============================================================
 
-ใช้เวลาอยากเทสว่าตั้งค่าเรียบร้อยไหม โดยไม่บันทึก state
+(4.1) --check — ตรวจการเชื่อมต่อ ไม่ทำงานจริง ไม่อัพไฟล์ ไม่ POST
+ใช้หลังติดตั้งใหม่/เปลี่ยน config เพื่อเช็คว่า key/url ใช้ได้
+
+    sudo bash -c 'set -a; source /opt/vseries-sync/config.env; set +a; \
+        /opt/vseries-sync/venv/bin/python /opt/vseries-sync/sync.py --check'
+
+จะปริ๊น
+  ✓ up2: HTTP xxx (token accepted at network level)
+  ✓ central: OK, total movies = N
+  ✓ telegram: bot @username ตอบกลับ ok
+และส่งข้อความ "✅ --check ผ่าน..." เข้า Telegram (เช็คใน chat อีกที)
+
+(4.2) --test — เทสจริง 3 เรื่อง ไม่บันทึก state
 - ประมวลผลแค่ 3 โฟลเดอร์แรก (เรียงตามชื่อ)
 - อัพรูปขึ้น up2.in.th จริง
 - ยิงข้อมูลเข้า vseries.api-movie.com จริง
 - แต่ไม่เขียน state.json — รันซ้ำกี่ครั้งก็ได้
-- ข้อความ Telegram จะมี prefix [TEST]
-
-วิธีรันด้วยมือ (ใช้ venv ที่ติดตั้งไว้แล้ว)
+- ข้อความ Telegram จะมี prefix 🧪 [TEST]
 
     sudo bash -c 'set -a; source /opt/vseries-sync/config.env; set +a; \
         /opt/vseries-sync/venv/bin/python /opt/vseries-sync/sync.py --test'
 
-หรือถ้าอยากเทสในจำนวนอื่น (เช่น 5 เรื่อง)
+ถ้าอยากเทสจำนวนอื่น (เช่น 5 เรื่อง)
 
     sudo bash -c 'set -a; source /opt/vseries-sync/config.env; set +a; \
         /opt/vseries-sync/venv/bin/python /opt/vseries-sync/sync.py --test --limit 5'
