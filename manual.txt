@@ -83,11 +83,13 @@ install.sh จะทำสิ่งต่อไปนี้
 4. โหมดต่างๆ
 ============================================================
 
+หลังติดตั้งเสร็จ จะมีคำสั่ง wrapper ชื่อ "vseries-sync" ใช้งานง่ายๆ
+(โหลด config.env ให้อัตโนมัติ + เรียก venv python)
+
 (4.1) --check — ตรวจการเชื่อมต่อ ไม่ทำงานจริง ไม่อัพไฟล์ ไม่ POST
 ใช้หลังติดตั้งใหม่/เปลี่ยน config เพื่อเช็คว่า key/url ใช้ได้
 
-    sudo bash -c 'set -a; source /opt/vseries-sync/config.env; set +a; \
-        /opt/vseries-sync/venv/bin/python /opt/vseries-sync/sync.py --check'
+    sudo vseries-sync --check
 
 จะปริ๊น
   ✓ up2: HTTP xxx (token accepted at network level)
@@ -102,17 +104,19 @@ install.sh จะทำสิ่งต่อไปนี้
 - แต่ไม่เขียน state.json — รันซ้ำกี่ครั้งก็ได้
 - ข้อความ Telegram จะมี prefix 🧪 [TEST]
 
-    sudo bash -c 'set -a; source /opt/vseries-sync/config.env; set +a; \
-        /opt/vseries-sync/venv/bin/python /opt/vseries-sync/sync.py --test'
+    sudo vseries-sync --test
 
 ถ้าอยากเทสจำนวนอื่น (เช่น 5 เรื่อง)
 
-    sudo bash -c 'set -a; source /opt/vseries-sync/config.env; set +a; \
-        /opt/vseries-sync/venv/bin/python /opt/vseries-sync/sync.py --test --limit 5'
+    sudo vseries-sync --test --limit 5
 
 หมายเหตุ
 - --test ส่งข้อมูลเข้าระบบจริง ถ้าเรื่องนั้นยังไม่เคยอัพ จะถูกเพิ่มเข้า DB
 - ถ้าเรื่องมีอยู่แล้ว (เคยอัพ) จะถูกอัพเดททับ episodes ใหม่ทั้งก้อน
+
+(4.3) วิธีรันแบบ full (ไม่ผ่าน wrapper) ใช้ตอน debug
+    sudo bash -c 'set -a; source /opt/vseries-sync/config.env; set +a; \
+        /opt/vseries-sync/venv/bin/python /opt/vseries-sync/sync.py --check'
 
 ============================================================
 5. โครงสร้างโฟลเดอร์หนังที่โปรแกรมรองรับ

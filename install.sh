@@ -38,7 +38,12 @@ done
 # -- 1) packages --
 echo "[1/7] อัพเดท apt + ติดตั้ง packages"
 export DEBIAN_FRONTEND=noninteractive
-apt-get update -y
+# apt-get update may return non-zero if a third-party repo is broken (e.g. Plesk).
+# Ubuntu's main repos usually still update — just warn and continue. If a required
+# package is genuinely missing, the apt-get install below will fail and abort.
+if ! apt-get update -y; then
+    echo "    ⚠️  apt-get update มี warning (อาจเป็น third-party repo เสีย) — ลองติดตั้ง package ต่อ"
+fi
 apt-get install -y --no-install-recommends \
     python3 \
     python3-venv \
@@ -72,13 +77,34 @@ fi
 "$INSTALL_DIR/venv/bin/pip" install --quiet --upgrade pip
 "$INSTALL_DIR/venv/bin/pip" install --quiet "requests>=2.31,<3"
 
-# -- 5) script --
-echo "[5/7] คัดลอก sync.py"
+# -- 5) script + wrapper --
+echo "[5/7] คัดลอก sync.py + สร้าง wrapper"
 install -m 0755 "$SRC_DIR/sync.py" "$INSTALL_DIR/sync.py"
 
 # Quick syntax check on the installed file (catches typos before systemd runs it)
 "$INSTALL_DIR/venv/bin/python" -m py_compile "$INSTALL_DIR/sync.py"
 echo "    -> syntax OK"
+
+# Wrapper script: loads config.env then runs sync.py with venv python.
+# Used for manual --check / --test / etc. invocations.
+cat > "$INSTALL_DIR/run.sh" <<'EOF'
+#!/usr/bin/env bash
+# vseries-sync manual runner. Loads config.env then executes sync.py.
+set -euo pipefail
+CONFIG=/opt/vseries-sync/config.env
+if [[ ! -r "$CONFIG" ]]; then
+    echo "อ่าน $CONFIG ไม่ได้ — ต้องรันเป็น root (sudo)" >&2
+    exit 1
+fi
+set -a
+# shellcheck disable=SC1090
+source "$CONFIG"
+set +a
+exec /opt/vseries-sync/venv/bin/python /opt/vseries-sync/sync.py "$@"
+EOF
+chmod 0755 "$INSTALL_DIR/run.sh"
+ln -sf "$INSTALL_DIR/run.sh" /usr/local/bin/vseries-sync
+echo "    -> wrapper installed: vseries-sync (symlink to $INSTALL_DIR/run.sh)"
 
 # -- 6) config --
 echo "[6/7] คัดลอก config.env (ถ้ายังไม่มี)"
@@ -99,19 +125,18 @@ systemctl enable --now vseries-sync.timer
 echo
 echo "==== ติดตั้งเสร็จ ===="
 echo "ตรวจการเชื่อมต่อ (ก่อนรันจริง):"
-echo "  sudo bash -c 'set -a; source $INSTALL_DIR/config.env; set +a; \\"
-echo "      $INSTALL_DIR/venv/bin/python $INSTALL_DIR/sync.py --check'"
+echo "  sudo vseries-sync --check"
 echo
 echo "โหมดทดสอบ (3 เรื่อง, ไม่บันทึก state):"
-echo "  sudo bash -c 'set -a; source $INSTALL_DIR/config.env; set +a; \\"
-echo "      $INSTALL_DIR/venv/bin/python $INSTALL_DIR/sync.py --test'"
+echo "  sudo vseries-sync --test"
 echo
-echo "รันรอบจริง (manual trigger):"
+echo "รันรอบจริง (manual trigger ผ่าน systemd):"
 echo "  sudo systemctl start vseries-sync.service"
 echo
 echo "ดูสถานะ timer:    systemctl status vseries-sync.timer --no-pager"
 echo "ดู log:           journalctl -u vseries-sync.service -n 100 --no-pager"
 echo "ดู log สด:        journalctl -u vseries-sync.service -f"
 echo "ดู state:         jq . $STATE_DIR/state.json"
+echo "แก้ config:       sudo nano $INSTALL_DIR/config.env"
 echo
 echo "อ่านคู่มือเต็ม: manual.txt"
